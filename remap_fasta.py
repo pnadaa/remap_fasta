@@ -73,11 +73,13 @@ def run_blastn(
     subject_fasta: str,
     task: str = "blastn",
     perc_identity: float = 80.0,
-    max_hsps: int = 1,
 ) -> str:
     """
     Align query_fasta (FASTA string) against subject_fasta (FASTA string)
     using blastn.  Returns the raw tabular (outfmt 6) output string.
+
+    -max_hsps 1 and -max_target_seqs 1 ensure only a single HSP from a
+    single subject sequence is returned, giving one unambiguous hit.
     """
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".fasta", delete=False
@@ -94,14 +96,15 @@ def run_blastn(
     try:
         cmd = [
             "blastn",
-            "-query",        query_file,
-            "-subject",      subject_file,
-            "-task",         task,
-            "-perc_identity", str(perc_identity),
-            "-max_hsps",     str(max_hsps),
-            "-outfmt",       "6 qseqid sseqid pident length mismatch gapopen "
-                             "qstart qend sstart send evalue bitscore",
-            "-dust",         "no",
+            "-query",           query_file,
+            "-subject",         subject_file,
+            "-task",            task,
+            "-perc_identity",   str(perc_identity),
+            "-max_hsps",        "1",
+            "-max_target_seqs", "1",
+            "-outfmt",          "6 qseqid sseqid pident length mismatch gapopen "
+                                "qstart qend sstart send evalue bitscore",
+            "-dust",            "no",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -116,15 +119,20 @@ def run_blastn(
 # BLAST result parsing
 # ---------------------------------------------------------------------------
 
-def best_hit(blast_output: str) -> tuple[int, int] | None:
+def best_hit(
+    blast_output: str,
+    query_len: int,
+    perc_length: float = 0.0,
+) -> tuple[int, int] | None:
     """
-    Parse blastn outfmt-6 output and return (sstart, send) for the HSP
-    with the highest bitscore.  sstart > send indicates a minus-strand hit.
-    Returns None if there are no hits.
-    """
-    best_coords = None
-    best_score  = -1.0
+    Parse blastn outfmt-6 output and return (sstart, send) for the first
+    (highest-scoring) HSP.  sstart > send indicates a minus-strand hit.
 
+    If perc_length > 0, the HSP is only accepted when query coverage
+    (qend - qstart + 1) / query_len * 100 >= perc_length.
+
+    Returns None if there are no hits or the hit fails the length filter.
+    """
     for line in blast_output.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -133,16 +141,18 @@ def best_hit(blast_output: str) -> tuple[int, int] | None:
         if len(cols) < 12:
             continue
         try:
-            sstart   = int(cols[8])
-            send     = int(cols[9])
-            bitscore = float(cols[11])
+            qstart = int(cols[6])
+            qend   = int(cols[7])
+            sstart = int(cols[8])
+            send   = int(cols[9])
         except ValueError:
             continue
-        if bitscore > best_score:
-            best_score  = bitscore
-            best_coords = (sstart, send)
-
-    return best_coords
+        if perc_length > 0.0:
+            coverage = (abs(qend - qstart) + 1) / query_len * 100
+            if coverage < perc_length:
+                return None
+        return sstart, send
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +171,8 @@ def relative_to_absolute(
     rel_end      : BLAST send   (1-based, within extracted region)
 
     Strand orientation is preserved:
-      rel_start < rel_end  →  forward strand
-      rel_start > rel_end  →  reverse complement (abs_start > abs_end)
+      rel_start < rel_end  ->  forward strand
+      rel_start > rel_end  ->  reverse complement (abs_start > abs_end)
     """
     offset    = region_start - 1
     abs_start = rel_start + offset
@@ -216,6 +226,14 @@ def main() -> None:
         help="Minimum %%identity for BLAST hits (default: 80.0)",
     )
     parser.add_argument(
+        "--perc_length", type=float, default=0.0,
+        help=(
+            "Minimum query coverage as a percentage of query length "
+            "(default: 0.0, disabled). E.g. 90.0 requires the alignment "
+            "to span at least 90%% of the query sequence."
+        ),
+    )
+    parser.add_argument(
         "--keep_on_fail", action="store_true",
         help=(
             "Retain records unchanged in output when alignment fails. "
@@ -231,7 +249,7 @@ def main() -> None:
         for record in SeqIO.parse(fh, "fasta"):
             seq_str = str(record.seq)
 
-            # ── 1. Parse header ─────────────────────────────────────────────
+            # -- 1. Parse header ---------------------------------------------
             try:
                 accession, reg_start, reg_end = parse_header(record.id)
             except ValueError as exc:
@@ -241,7 +259,7 @@ def main() -> None:
                     records_out.append(record)
                 continue
 
-            # ── 2. Extract reference region via blastdbcmd ──────────────────
+            # -- 2. Extract reference region via blastdbcmd ------------------
             try:
                 region_fasta = extract_region(
                     args.database, accession, reg_start, reg_end
@@ -253,7 +271,7 @@ def main() -> None:
                     records_out.append(record)
                 continue
 
-            # ── 3. Run blastn ───────────────────────────────────────────────
+            # -- 3. Run blastn -----------------------------------------------
             query_fasta = f">{record.id}\n{seq_str}\n"
             try:
                 blast_out = run_blastn(
@@ -271,12 +289,12 @@ def main() -> None:
                     records_out.append(record)
                 continue
 
-            # ── 4. Parse best HSP ───────────────────────────────────────────
-            hit = best_hit(blast_out)
+            # -- 4. Parse single HSP (with optional length filter) -----------
+            hit = best_hit(blast_out, len(seq_str), args.perc_length)
             if hit is None:
                 print(
                     f"[WARNING] No BLAST hit for {record.id} — try lowering "
-                    f"--perc_identity or switching to --task blastn-short.",
+                    f"--perc_identity / --perc_length or using --task blastn-short.",
                     file=sys.stderr,
                 )
                 n_failed += 1
@@ -284,23 +302,23 @@ def main() -> None:
                     records_out.append(record)
                 continue
 
-            # ── 5. Convert to absolute genome coordinates ───────────────────
+            # -- 5. Convert to absolute genome coordinates ------------------
             rel_s, rel_e = hit
             abs_s, abs_e = relative_to_absolute(reg_start, rel_s, rel_e)
 
             new_id = f"{accession}_{abs_s}-{abs_e}"
-            print(f"[INFO]  {record.id}  →  {new_id}", file=sys.stderr)
+            print(f"[INFO]  {record.id}  ->  {new_id}", file=sys.stderr)
 
             records_out.append(
                 SeqRecord(Seq(seq_str), id=new_id, description="", name="")
             )
             n_updated += 1
 
-    # ── 6. Write output ──────────────────────────────────────────────────────
+    # -- 6. Write output -----------------------------------------------------
     write_fasta(records_out, args.output)
     print(
         f"\n[DONE]  {n_updated} records updated, {n_failed} failed. "
-        f"Output → {args.output}",
+        f"Output -> {args.output}",
         file=sys.stderr,
     )
 
