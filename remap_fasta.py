@@ -361,8 +361,11 @@ def main() -> None:
     # -- Runtime -------------------------------------------------------------
     runtime = parser.add_argument_group("Runtime")
     runtime.add_argument(
-        "-t", "--threads", type=int, default=1,
-        help="Number of parallel worker processes (default: 1)",
+        "-t", "--threads", type=int, default=len(os.sched_getaffinity(0)) or 1,
+        help=(
+            f"Number of parallel worker processes "
+            f"(default: all available CPUs = {len(os.sched_getaffinity(0)) or 1})"
+        ),
     )
     runtime.add_argument(
         "--keep_on_fail", action="store_true",
@@ -403,32 +406,53 @@ def main() -> None:
     )
 
     # -- Run in parallel (Pool(1) is valid and incurs negligible overhead) ---
-    with Pool(processes=args.threads) as pool:
-        results = list(pool.imap(worker, record_data))
+    chunksize = 1
 
-    # -- Collect output and report -------------------------------------------
     records_out: list[SeqRecord] = []
     n_updated = n_failed = 0
 
-    for res in results:
-        if res["error"] is None:
-            print(f"[INFO]  {res['record_id']}  ->  {res['new_id']}", file=sys.stderr)
-            records_out.append(
-                SeqRecord(Seq(res["seq_str"]), id=res["new_id"], description="", name="")
-            )
-            n_updated += 1
-        else:
-            print(f"[WARNING]  {res['record_id']}: {res['error']}", file=sys.stderr)
-            n_failed += 1
-            if args.keep_on_fail:
-                records_out.append(
-                    SeqRecord(
-                        Seq(res["seq_str"]),
-                        id=res["record_id"],
-                        description="",
-                        name="",
+    with Pool(processes=args.threads, maxtasksperchild=200) as pool:
+        try:
+            for n_done, res in enumerate(
+                pool.imap_unordered(worker, record_data, chunksize=chunksize), start=1
+            ):
+                if res["error"] is None:
+                    print(
+                        f"[{n_done}/{total}]  {res['record_id']}  ->  {res['new_id']}",
+                        file=sys.stderr,
                     )
-                )
+                    records_out.append(
+                        SeqRecord(
+                            Seq(res["seq_str"]),
+                            id=res["new_id"],
+                            description="",
+                            name="",
+                        )
+                    )
+                    n_updated += 1
+                else:
+                    print(
+                        f"[{n_done}/{total}] [WARNING]  {res['record_id']}: {res['error']}",
+                        file=sys.stderr,
+                    )
+                    n_failed += 1
+                    if args.keep_on_fail:
+                        records_out.append(
+                            SeqRecord(
+                                Seq(res["seq_str"]),
+                                id=res["record_id"],
+                                description="",
+                                name="",
+                            )
+                        )
+        except KeyboardInterrupt:
+            pool.terminate()
+            pool.join()
+            print(
+                "\n[INTERRUPTED]  KeyboardInterrupt — workers terminated.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # -- Write output --------------------------------------------------------
     write_fasta(records_out, args.output)
@@ -437,6 +461,7 @@ def main() -> None:
         f"Output -> {args.output}",
         file=sys.stderr,
     )
+
 
 
 if __name__ == "__main__":
