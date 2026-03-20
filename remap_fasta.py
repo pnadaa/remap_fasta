@@ -30,6 +30,33 @@ from Bio.SeqRecord import SeqRecord
 
 
 # ---------------------------------------------------------------------------
+# Get number of available cpus
+# ---------------------------------------------------------------------------
+
+def get_available_cpus() -> int:
+    """
+    Resolve available CPU count for the current process in priority order:
+      1. PBS_NCPUS env var (set by PBS/Torque, most explicit)
+      2. os.sched_getaffinity (Linux kernel affinity mask)
+      3. os.cpu_count() (total node CPUs, last resort)
+    """
+    pbs_ncpus = os.environ.get("PBS_NCPUS") or os.environ.get("NCPUS")
+    if pbs_ncpus:
+        try:
+            return int(pbs_ncpus)
+        except ValueError:
+            pass
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            n = len(os.sched_getaffinity(0))
+            if n > 0:
+                return n
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
+# ---------------------------------------------------------------------------
 # Header parsing
 # ---------------------------------------------------------------------------
 
@@ -361,10 +388,10 @@ def main() -> None:
     # -- Runtime -------------------------------------------------------------
     runtime = parser.add_argument_group("Runtime")
     runtime.add_argument(
-        "-t", "--threads", type=int, default=len(os.sched_getaffinity(0)) or 1,
+        "-t", "--threads", type=int, default=get_available_cpus() or 1,
         help=(
             f"Number of parallel worker processes "
-            f"(default: all available CPUs = {len(os.sched_getaffinity(0)) or 1})"
+            f"(default: all available CPUs)"
         ),
     )
     runtime.add_argument(
