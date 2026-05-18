@@ -6,9 +6,9 @@ Your sequences have mismatches and could be on either strand — BLAST handles g
 
 ## **Workflow per record**
 
-1.  **Parse header** — `rsplit('_', 1)` splits on the *last* underscore only, so accession IDs like `NZ_CP012345.1_100-200` are handled correctly
+1.  **Parse header** — `rsplit(sep, 1)` splits on the *last* separator only, so accession IDs like `NZ_CP012345.1_100-200` are handled correctly. Both `_` and `:` are accepted as the coordinate separator (colon is preferred when present). Coordinates may be given in either order — `start > end` is interpreted as a reverse-strand (high-low) annotation.
 
-2.  **Extract reference region** — `blastdbcmd -range start-end` pulls only the relevant window from the genome (1-based, inclusive)​
+2.  **Extract reference region** — `blastdbcmd -range start-end` pulls only the relevant window from the genome (1-based, inclusive). High-low input headers are normalised to low-high for `blastdbcmd`; the forward-strand region is always extracted, and `blastn` searches both strands of the query so reverse-complement inputs still align as a minus-strand HSP​
 
 3.  **Run `blastn -subject`** — aligns query against the extracted region using temp files; `--dust no` avoids masking IS-element-relevant repetitive sequence
 
@@ -70,6 +70,6 @@ python remap_fasta_coords.py -i input.fasta -o out.fasta -db mydb --keep_on_fail
 
 -   **Biopython** — `pip install biopython` or `conda install biopython`
 
-One thing to note: if your IS element sequences are on the minus strand relative to the reference, the output header will have `abs_start > abs_end` (e.g. `NZ_CP012345.1_2500-2200`). This is intentional and consistent with how tools like NCBI and many annotation pipelines encode strand. If you'd prefer separate `+/-` strand notation instead, let me know and I can add a `--strand_notation` flag.
+One thing to note: if your IS element sequences are on the minus strand relative to the reference, the output header will have `abs_start > abs_end` (e.g. `NZ_CP012345.1_2500-2200`). This is intentional and consistent with how tools like NCBI and many annotation pipelines encode strand. High-low input headers are likewise accepted and round-trip naturally — a `CP011073:1290625-1290196` input with a reverse-complemented sequence will remap to e.g. `CP011073_1290440-1290381`. If you'd prefer separate `+/-` strand notation instead, let me know and I can add a `--strand_notation` flag.
 
 Documentation and code logic was prepared with the assistance of Claude Sonnet 4.6 Thinking via Perplexity Pro
