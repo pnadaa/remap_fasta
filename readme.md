@@ -72,4 +72,4 @@ python remap_fasta_coords.py -i input.fasta -o out.fasta -db mydb --keep_on_fail
 
 One thing to note: if your IS element sequences are on the minus strand relative to the reference, the output header will have `abs_start > abs_end` (e.g. `NZ_CP012345.1_2500-2200`). This is intentional and consistent with how tools like NCBI and many annotation pipelines encode strand. High-low input headers are likewise accepted and round-trip naturally — a `CP011073:1290625-1290196` input with a reverse-complemented sequence will remap to e.g. `CP011073_1290440-1290381`. If you'd prefer separate `+/-` strand notation instead, let me know and I can add a `--strand_notation` flag.
 
-Documentation and code logic was prepared with the assistance of Claude Sonnet 4.6 Thinking via Perplexity Pro
+Documentation and code logic was prepared with the assistance of Claude Sonnet 4.6 Thinking via Perplexity Pro and Claude Opus 4.7 via Claude Pro
