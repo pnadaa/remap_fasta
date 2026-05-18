@@ -62,17 +62,23 @@ def get_available_cpus() -> int:
 
 def parse_header(header: str) -> tuple[str, int, int]:
     """
-    Parse a header of the form  accessionID_start-end.
-    Uses rsplit('_', 1) so accession IDs containing underscores are handled
-    correctly.  Returns (accession, start, end) as 1-based coordinates.
+    Parse a header of the form  accessionID_start-end  or  accessionID:start-end.
+    Uses rsplit(sep, 1) so accession IDs containing the separator character
+    earlier in the string are handled correctly.  If a colon is present it
+    is preferred as the separator (since accession IDs more commonly contain
+    underscores than colons).  Returns (accession, start, end) as 1-based
+    coordinates, preserving the input order.  start > end is permitted and
+    denotes a reverse-strand (high-low) annotation.
     """
     try:
-        accession, coord_str = header.rsplit("_", 1)
+        sep = ":" if ":" in header else "_"
+        accession, coord_str = header.rsplit(sep, 1)
         start_str, end_str = coord_str.split("-", 1)
         return accession, int(start_str), int(end_str)
     except (ValueError, AttributeError) as exc:
         raise ValueError(
-            f"Cannot parse header '{header}': expected accessionID_start-end"
+            f"Cannot parse header '{header}': "
+            f"expected accessionID_start-end or accessionID:start-end"
         ) from exc
 
 
@@ -82,20 +88,24 @@ def parse_header(header: str) -> tuple[str, int, int]:
 
 def extract_region(db: str, accession: str, start: int, end: int) -> str:
     """
-    Use blastdbcmd to pull the genomic region [start, end] (1-based, inclusive)
-    from the local BLAST database.  Returns a FASTA string.
+    Use blastdbcmd to pull the genomic region between [start, end] (1-based,
+    inclusive) from the local BLAST database.  Coordinates may be supplied
+    in either order; the forward-strand region is always returned (blastn
+    searches both strands of the query, so a reverse-complement input
+    sequence will still align as a minus-strand HSP).  Returns a FASTA string.
     """
+    low, high = (start, end) if start <= end else (end, start)
     cmd = [
         "blastdbcmd",
         "-db",     db,
         "-entry",  accession,
-        "-range",  f"{start}-{end}",
+        "-range",  f"{low}-{high}",
         "-outfmt", "%f",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0 or not result.stdout.strip():
         raise RuntimeError(
-            f"blastdbcmd failed for {accession}:{start}-{end}\n"
+            f"blastdbcmd failed for {accession}:{low}-{high}\n"
             f"  STDERR: {result.stderr.strip()}"
         )
     return result.stdout
@@ -211,7 +221,8 @@ def relative_to_absolute(
     Convert subject-relative 1-based coordinates from a blastdbcmd-extracted
     region back to absolute genome coordinates.
 
-    region_start : 1-based start of the extracted region in the genome
+    region_start : 1-based low coordinate of the extracted forward-strand
+                   region in the genome (i.e. min(header_start, header_end))
     rel_start    : BLAST sstart (1-based, within extracted region)
     rel_end      : BLAST send   (1-based, within extracted region)
 
@@ -292,7 +303,7 @@ def _process_record(
         return result
 
     rel_s, rel_e = hit
-    abs_s, abs_e = relative_to_absolute(reg_start, rel_s, rel_e)
+    abs_s, abs_e = relative_to_absolute(min(reg_start, reg_end), rel_s, rel_e)
     result["new_id"] = f"{accession}_{abs_s}-{abs_e}"
     return result
 
